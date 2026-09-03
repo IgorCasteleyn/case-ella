@@ -133,35 +133,37 @@ def _ingest_city(
 ) -> None:
     try:
         with SessionLocal() as session:
+            existing = session.scalar(
+                select(ForecastRun.id).where(
+                    ForecastRun.city_id == city.id,
+                    ForecastRun.run_at == current_run_hour,
+                    ForecastRun.status == "success",
+                )
+            )
+        if existing is not None:
+            logger.info(
+                "Stad %s is al succesvol ingeslagen voor run_at=%s; overgeslagen",
+                city.name,
+                current_run_hour.isoformat(),
+            )
+            return
+
+        response = client.get(
+            FORECAST_URL,
+            params={
+                "latitude": city.latitude,
+                "longitude": city.longitude,
+                "hourly": "temperature_2m,wind_speed_10m",
+                "timezone": "UTC",
+            },
+        )
+        response.raise_for_status()
+        payload = response.json()
+        forecast_values = _parse_forecast_values(payload, city.id, uuid.uuid4())
+
+        with SessionLocal() as session:
             with session.begin():
-                existing = session.scalar(
-                    select(ForecastRun.id).where(
-                        ForecastRun.city_id == city.id,
-                        ForecastRun.run_at == current_run_hour,
-                        ForecastRun.status == "success",
-                    )
-                )
-                if existing is not None:
-                    logger.info(
-                        "Stad %s is al succesvol ingeslagen voor run_at=%s; overgeslagen",
-                        city.name,
-                        current_run_hour.isoformat(),
-                    )
-                    return
-
-                response = client.get(
-                    FORECAST_URL,
-                    params={
-                        "latitude": city.latitude,
-                        "longitude": city.longitude,
-                        "hourly": "temperature_2m,wind_speed_10m",
-                        "timezone": "UTC",
-                    },
-                )
-                response.raise_for_status()
-                payload = response.json()
-
-                run_id = uuid.uuid4()
+                run_id = forecast_values[0].run_id
                 session.add(
                     ForecastRun(
                         id=run_id,
@@ -170,11 +172,11 @@ def _ingest_city(
                         status="success",
                     )
                 )
-                session.add_all(_parse_forecast_values(payload, city.id, run_id))
+                session.add_all(forecast_values)
                 logger.info(
                     "Stad %s succesvol ingeslagen (%s uurwaarden)",
                     city.name,
-                    len(payload["hourly"]["time"]),
+                    len(forecast_values),
                 )
     except _CITY_FAILURES as exc:
         logger.exception("Ingestie mislukt voor stad %s: %s", city.name, exc)

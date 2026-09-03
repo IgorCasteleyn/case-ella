@@ -38,6 +38,7 @@ class City(Base):
 
 class ForecastRun(Base):
     __tablename__ = "forecast_runs"
+    __table_args__ = (UniqueConstraint("city_id", "run_at", name="uq_city_run_at"),)
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
