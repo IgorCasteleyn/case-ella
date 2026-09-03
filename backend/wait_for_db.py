@@ -101,10 +101,25 @@ def run_initial_ingest_if_empty() -> None:
     logger.info("Initiële ingest voltooid")
 
 
+def run_seed_demo_history() -> None:
+    ingest_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ingest.py")
+    logger.info("Demo-historie seed starten")
+    result = subprocess.run(
+        [sys.executable, ingest_path, "seed-demo-history"],
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"seed_demo_history mislukt met exitcode {result.returncode}"
+        )
+    logger.info("Demo-historie seed voltooid")
+
+
 def main() -> None:
     wait_for_db()
     run_seed()
     run_initial_ingest_if_empty()
+    run_seed_demo_history()
     if len(sys.argv) < 2:
         raise RuntimeError("Geen commando opgegeven na database-wacht")
     os.execvp(sys.argv[1], sys.argv[1:])

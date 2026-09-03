@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 try:
     from backend.database import SessionLocal
@@ -26,6 +27,12 @@ logging.basicConfig(
 logger = logging.getLogger("ingest")
 
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+
+# Virtuele voorgaande runs zodat /forecasts/history meteen een revisielijn toont.
+DEMO_HISTORY_OFFSETS: tuple[tuple[timedelta, float, float], ...] = (
+    (timedelta(days=1), -1.2, 2.0),
+    (timedelta(days=2), 0.8, -1.5),
+)
 
 
 @dataclass(frozen=True)
@@ -203,7 +210,148 @@ def ingest() -> None:
             _ingest_city(client, city, current_run_hour)
 
     logger.info("Ingestie afgerond")
+    seed_demo_history()
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _seed_demo_history_for_city(city_id: int, city_name: str) -> None:
+    try:
+        with SessionLocal() as session:
+            with session.begin():
+                success_count = session.scalar(
+                    select(func.count())
+                    .select_from(ForecastRun)
+                    .where(
+                        ForecastRun.city_id == city_id,
+                        ForecastRun.status == "success",
+                    )
+                )
+                if success_count is not None and success_count >= 2:
+                    logger.info(
+                        "Stad %s heeft al %s succesvolle runs; demo-historie overgeslagen",
+                        city_name,
+                        success_count,
+                    )
+                    return
+
+                source_run = session.scalar(
+                    select(ForecastRun)
+                    .where(
+                        ForecastRun.city_id == city_id,
+                        ForecastRun.status == "success",
+                    )
+                    .order_by(ForecastRun.run_at.desc())
+                    .limit(1)
+                )
+                if source_run is None:
+                    logger.warning(
+                        "Stad %s heeft geen succesvolle run; demo-historie overgeslagen",
+                        city_name,
+                    )
+                    return
+
+                source_values = list(
+                    session.scalars(
+                        select(ForecastValue).where(
+                            ForecastValue.run_id == source_run.id
+                        )
+                    ).all()
+                )
+                if not source_values:
+                    logger.warning(
+                        "Stad %s heeft een lege succesvolle run; demo-historie overgeslagen",
+                        city_name,
+                    )
+                    return
+
+                current_run_hour = _as_utc(source_run.run_at)
+                created = 0
+                for delta, temperature_offset, wind_offset in DEMO_HISTORY_OFFSETS:
+                    demo_run_at = current_run_hour - delta
+                    existing = session.scalar(
+                        select(ForecastRun.id).where(
+                            ForecastRun.city_id == city_id,
+                            ForecastRun.run_at == demo_run_at,
+                            ForecastRun.status == "success",
+                        )
+                    )
+                    if existing is not None:
+                        logger.info(
+                            "Stad %s heeft al een run op %s; overgeslagen",
+                            city_name,
+                            demo_run_at.isoformat(),
+                        )
+                        continue
+
+                    run_id = uuid.uuid4()
+                    session.add(
+                        ForecastRun(
+                            id=run_id,
+                            city_id=city_id,
+                            run_at=demo_run_at,
+                            status="success",
+                        )
+                    )
+                    session.add_all(
+                        [
+                            ForecastValue(
+                                run_id=run_id,
+                                city_id=city_id,
+                                target_time=value.target_time,
+                                temperature_2m=value.temperature_2m
+                                + temperature_offset,
+                                wind_speed_10m=max(
+                                    0.0, value.wind_speed_10m + wind_offset
+                                ),
+                            )
+                            for value in source_values
+                        ]
+                    )
+                    created += 1
+
+                logger.info(
+                    "Stad %s: %s virtuele historische runs toegevoegd",
+                    city_name,
+                    created,
+                )
+    except Exception:
+        logger.exception(
+            "Demo-historie transactie teruggedraaid voor stad %s",
+            city_name,
+        )
+
+
+def seed_demo_history() -> None:
+    """Voegt T-24h en T-48h revisies toe als een stad minder dan 2 succesvolle runs heeft."""
+    with SessionLocal() as session:
+        cities = [
+            CityRef(
+                id=city.id,
+                name=city.name,
+                latitude=city.latitude,
+                longitude=city.longitude,
+            )
+            for city in session.scalars(select(City).order_by(City.id)).all()
+        ]
+
+    if not cities:
+        logger.warning("Geen steden in de database; demo-historie afgebroken")
+        return
+
+    logger.info("Demo-historie controleren")
+    for city in cities:
+        _seed_demo_history_for_city(city.id, city.name)
+    logger.info("Demo-historie afgerond")
 
 
 if __name__ == "__main__":
-    ingest()
+    command = sys.argv[1] if len(sys.argv) > 1 else "ingest"
+    if command == "seed-demo-history":
+        seed_demo_history()
+    else:
+        ingest()
