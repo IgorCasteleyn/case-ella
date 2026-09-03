@@ -1,8 +1,5 @@
-from fastapi import FastAPI
+"""Compatibiliteits-entrypoint. De API leeft in backend/main.py."""
 
-app = FastAPI(title="Ella Weather API")
+from main import app
 
-
-@app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+__all__ = ["app"]

@@ -62,9 +62,49 @@ def run_seed() -> None:
     logger.info("Database seed voltooid")
 
 
+def _has_successful_forecast_run() -> bool:
+    connection = psycopg2.connect(
+        host=os.environ.get("POSTGRES_HOST", "db"),
+        port=int(os.environ.get("POSTGRES_PORT", "5432")),
+        user=os.environ.get("POSTGRES_USER", "postgres"),
+        password=os.environ.get("POSTGRES_PASSWORD", "postgres"),
+        dbname=os.environ.get("POSTGRES_DB", "weather_db"),
+        connect_timeout=CONNECT_TIMEOUT_SECONDS,
+    )
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM forecast_runs WHERE status = %s LIMIT 1",
+                ("success",),
+            )
+            return cursor.fetchone() is not None
+    finally:
+        connection.close()
+
+
+def run_initial_ingest_if_empty() -> None:
+    try:
+        if _has_successful_forecast_run():
+            logger.info(
+                "Succesvolle forecast-run aanwezig; initiële ingest overgeslagen"
+            )
+            return
+    except psycopg2.Error:
+        logger.exception("Kon forecast_runs niet controleren")
+        raise
+
+    ingest_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ingest.py")
+    logger.info("Geen succesvolle forecast-run gevonden; ingest.py starten")
+    result = subprocess.run([sys.executable, ingest_path], check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"ingest.py mislukt met exitcode {result.returncode}")
+    logger.info("Initiële ingest voltooid")
+
+
 def main() -> None:
     wait_for_db()
     run_seed()
+    run_initial_ingest_if_empty()
     if len(sys.argv) < 2:
         raise RuntimeError("Geen commando opgegeven na database-wacht")
     os.execvp(sys.argv[1], sys.argv[1:])
