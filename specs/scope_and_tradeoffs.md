@@ -1,0 +1,9 @@
+# Scope Cut Matrix
+
+| Onderdeel | In Scope (Wel bouwen) | Out of Scope (Bewust wegsnijden) | Waarom deze keuze? |
+| --- | --- | --- | --- |
+| **Data Ingestion** | Exact 3 steden (Brussel, Gent, Antwerpen). Maximaal 2-3 variabelen: temperatuur en windsnelheid. | Alle overige weerparameters (UV, luchtdruk, bodemvocht). Dynamische steden toevoegen via een interface. | Energiehandel en -balancering draaien primair om temperatuur (vraag) en wind/zon (aanbod). De rest is ruis binnen een tijdvenster van 4 uur. |
+| **Datamodel** | 1 bitemporele structuur (`target_time` vs `run_at`), unieke constraints en transactie-rollback. | Database partitioning, archivering van oude runs, complexe soft deletes. | Bitemporaliteit en idempotentie zijn harde vereisten. Partitionering is schaalbaarheid voor dag twee. |
+| **FastAPI Backend** | 3 endpoints: `GET /cities`, `GET /forecasts/latest`, `GET /forecasts/history`. | Authenticatie (JWT), autorisatie, rate limiting, paginering, caching lagen (Redis). | Dit is een interne evaluatie-tool. Auth toevoegen kost tijd zonder dat het iets bewijst over je data engineering vaardigheden. |
+| **Frontend** | 1 pagina: stad selecteren, 1 lijngrafiek voor het meest recente weerbericht, en een eenvoudige evolutiegrafiek. | Multi-page routing, animaties, donkere/lichte modus switcher, mobiele responsiveness, CSV exports. | Een werkend dashboard met de stretch goal (visualisatie van revisies) toont data-inzicht. Styling-details kosten te veel tijd. |
+| **Infrastructuur** | `docker compose up` met DB, backend, frontend en auto-ingest bij start. | Celery, RabbitMQ, Kubernetes manifests, CI/CD pipelines. | Geen onnodige complexiteit. De database en API moeten betrouwbaar opstarten via één commando. |

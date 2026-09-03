@@ -1,0 +1,16 @@
+---
+description: Algemene architectuur- en werkregels voor de Belgian Weather case
+globs: *
+alwaysApply: true
+---
+
+# Rol en Context
+
+Je bouwt mee aan een bitemporeel data-inname platform voor Ella Energy. Betrouwbaarheid, idempotentie en type-veiligheid gaan altijd boven esthetiek of snelle hacks.
+
+# Werkwijze
+
+- Raadpleeg altijd eerst de bestanden in /specs voordat je implementaties voorstelt.
+- Schrijf code in kleine, verifieerbare stappen.
+- Verzin geen externe packages. Vraag toestemming voor het toevoegen van dependencies.
+- Schrijf nooit lege exception handlers (`except: pass`). Fouten worden gelogd en transacties worden teruggerold.
