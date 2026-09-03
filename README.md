@@ -1,5 +1,10 @@
 # Belgian Weather Explorer
 
+**Author:** Casteleyn igor
+**Date:** 3 September 2026  
+**Context:** Technical Assessment for Ella Energy (Software / Data Engineer)  
+**Repository:** <https://github.com/IgorCasteleyn/case-ella>
+
 ## Quickstart (Zero-Configuration)
 
 The entire application starts via a single command from a clean clone:
@@ -121,15 +126,9 @@ The read-only API serves structured JSON backed by Pydantic v2 validation models
 
 | Method | Endpoint | Query Parameters | Description |
 | --- | --- | --- | --- |
-| `GET` | `/api/v1/cities` | None | Returns supported Belgian cities for frontend selection.
-
- |
-| `GET` | `/api/v1/forecasts/latest` | `city_id: int` | Returns forecast points from the most recent successful run for the city (`target_time >=` current UTC hour). The frontend trims this to a 72-hour window; all points originate from one complete run for horizon consistency.
-
- |
+| `GET` | `/api/v1/cities` | None | Returns supported Belgian cities for frontend selection. |
+| `GET` | `/api/v1/forecasts/latest` | `city_id: int` | Returns forecast points from the most recent successful run for the city (`target_time >=` current UTC hour). The frontend trims this to a 72-hour window; all points originate from one complete run for horizon consistency. |
 | `GET` | `/api/v1/forecasts/history` | `city_id: int`, `target_time: datetime` | Returns the revision timeline for a specific hour across runs, ordered by `run_at ASC` to visualize forecast drift.
-
- |
 
 ### Error Contracts
 
@@ -206,7 +205,6 @@ Development utilized Cursor Pro under strict human direction. Rather than allowi
 
 ```text
 [1. Problem Decomposition] -> [2. Spec Authoring in /specs] -> [3. Context Prompting] -> [4. Code Verification & Review]
-
 ```
 
 ### 1. Specification-First Authoring
@@ -259,4 +257,4 @@ class BaseWeatherProvider(ABC):
 
 ```
 
-2. **Schema Extension:** Add `provider_id` to `forecast_runs`. Update the uniqueness constraint to `UNIQUE (provider_id, city_id, run_id, target_time)`. This allows dashboards to directly compare ECMWF against GFS for the same target hour.
+1. **Schema Extension:** Add `provider_id` to `forecast_runs` and update its constraint to `UNIQUE (provider_id, city_id, run_at)`. The child table `forecast_values` remains unchanged, as its foreign key `run_id` already uniquely resolves to the specific provider's execution.
