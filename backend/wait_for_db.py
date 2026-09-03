@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import sys
 import time
 
@@ -52,8 +53,18 @@ def wait_for_db() -> None:
     raise RuntimeError(f"Database niet bereikbaar na {MAX_ATTEMPTS} pogingen")
 
 
+def run_seed() -> None:
+    seed_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seed.py")
+    logger.info("Database seed starten")
+    result = subprocess.run([sys.executable, seed_path], check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"seed.py mislukt met exitcode {result.returncode}")
+    logger.info("Database seed voltooid")
+
+
 def main() -> None:
     wait_for_db()
+    run_seed()
     if len(sys.argv) < 2:
         raise RuntimeError("Geen commando opgegeven na database-wacht")
     os.execvp(sys.argv[1], sys.argv[1:])
