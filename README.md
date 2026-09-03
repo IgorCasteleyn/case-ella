@@ -22,9 +22,11 @@ On initial boot, the backend entrypoint (`wait_for_db.py`):
 
 2. Executes schema migrations and seeds reference cities (Brussels, Ghent, Antwerp).
 
-3. Checks for existing data; if empty, it triggers an immediate live ingestion run alongside two synthetic reference runs (T-24h and T-48h).
+3. Checks for existing forecast data; if none exists, triggers a live Open-Meteo ingestion run.
 
-4. Starts the API server once data is verified. The reviewer can view populated charts immediately without executing manual seed scripts.
+4. Ensures revision history is testable on cold-start: if a city has fewer than two successful runs, `seed_demo_history()` inserts two explicit reviewer fixtures (T-24h and T-48h). These are not additional API fetches; they copy the live run's horizon with fixed temperature and wind offsets so the revision chart shows multiple points immediately.
+
+5. Starts the API server once data is verified. The reviewer can view populated charts without executing manual seed scripts.
 
 ---
 
@@ -50,7 +52,11 @@ Weather forecasts for power markets and grid operation are updated continuously.
 
 * **Uniqueness:** `UNIQUE (city_id, run_id, target_time)` guarantees that a single ingestion run cannot insert duplicate target timestamps for any city.
 
-* **Query Index:** A composite B-tree index on `(city_id, target_time, run_id)` optimizes subqueries selecting the most recent forecast run per target hour (`DISTINCT ON (target_time)`).
+* **Run Uniqueness:** `UNIQUE (city_id, run_at)` on `forecast_runs` guarantees at the database level that no city can have duplicate runs for the same hourly reference window.
+
+* **Query Index:** A composite B-tree index on `(city_id, target_time, run_id)` accelerates history lookups filtered by city and target hour.
+
+* **Latest resolution:** `/api/v1/forecasts/latest` does not merge runs per target hour. It selects the single most recent successful `forecast_run` for the city and returns all of that run's values from the current UTC hour onward. Every point in the response shares the same `forecast_run_at`, keeping the displayed horizon internally consistent.
 
 ---
 
@@ -91,6 +97,22 @@ current_run_hour = datetime.now(timezone.utc).replace(minute=0, second=0, micros
 
 3. The loop proceeds immediately to Antwerp and Brussels without aborting the pipeline.
 
+### 4. Parser Validation (Automated Tests)
+
+Before any parsed values enter a database transaction, `_parse_forecast_values` in `backend/ingest.py` validates Open-Meteo hourly arrays for structural integrity. Automated unit tests in `backend/tests/test_parser.py` exercise this gate in memory (no PostgreSQL connection, no network calls):
+
+* **`test_parse_valid_payload`:** A well-formed payload with two time steps produces two `ForecastValue` records with correct float mappings.
+* **`test_parse_mismatched_lengths_fails`:** Unequal array lengths (`time` vs. `temperature_2m` vs. `wind_speed_10m`) raise `ValueError`.
+* **`test_parse_none_values_fails`:** `null` entries in the temperature or wind arrays raise `ValueError`.
+
+These tests prove that corrupt upstream payloads are rejected before they reach the database, preventing partial or malformed batches from poisoning the forecast dataset.
+
+To run them against a live stack:
+
+```bash
+docker compose exec backend pytest
+```
+
 ---
 
 ## 3. API Surface (`FastAPI`)
@@ -102,7 +124,7 @@ The read-only API serves structured JSON backed by Pydantic v2 validation models
 | `GET` | `/api/v1/cities` | None | Returns supported Belgian cities for frontend selection.
 
  |
-| `GET` | `/api/v1/forecasts/latest` | `city_id: int` | Returns the latest forecast points for the upcoming 72 hours (`target_time >= NOW()`), resolved using the newest successful run per hour.
+| `GET` | `/api/v1/forecasts/latest` | `city_id: int` | Returns forecast points from the most recent successful run for the city (`target_time >=` current UTC hour). The frontend trims this to a 72-hour window; all points originate from one complete run for horizon consistency.
 
  |
 | `GET` | `/api/v1/forecasts/history` | `city_id: int`, `target_time: datetime` | Returns the revision timeline for a specific hour across runs, ordered by `run_at ASC` to visualize forecast drift.
@@ -137,11 +159,22 @@ A dedicated worker service is configured in `docker-compose.yml` running an hour
 
 ```yaml
 cron:
-  build: ./backend
-  command: sh -c "while true; do python ingest.py; sleep 3600; done"
-  depends_on:
-    db:
-      condition: service_healthy
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    entrypoint: []
+    command: sh -c "while true; do sleep 3600; python ingest.py; done"
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: weather_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/weather_db
 
 ```
 
@@ -163,7 +196,7 @@ To deliver a production-grade data pipeline within the 4-hour constraint, scope 
 
 * **Cut: Multi-Route Navigation & Theming:** Omitted routing libraries and theme toggles in favor of a robust single-page interface with a working revision history chart (the stretch goal).
 
-See `specs/scope_tradeoffs.md` for the initial scoping matrix drafted before implementation.
+See `specs/scope_and_tradeoffs.md` for the initial scoping matrix drafted before implementation.
 
 ---
 
@@ -182,7 +215,7 @@ Before generating code, technical constraints were codified in Markdown files co
 
 * `specs/architecture.md`: Data flow, ASCII topologies, and module contracts.
 
-* `specs/scope_tradeoffs.md`: Trade-off matrix defining technical boundaries.
+* `specs/scope_and_tradeoffs.md`: Trade-off matrix defining technical boundaries.
 
 ### 2. Manual Corrections to AI Output
 
@@ -191,7 +224,7 @@ Cursor Pro was prompted using localized file contexts (e.g. `@specs/architecture
 * **UUID Idempotency Leak:** Cursor initially generated random UUIDs for `ForecastRun` without checking previous runs, resulting in duplicate records on repeated execution. I intervened to add the hourly floor check (`current_run_hour`) before any DB insert.
 * **Session Rollback Scoping:** Cursor initially wrapped the external HTTP request inside an open database transaction block. I separated the network call from the database transaction so slow API responses do not hold idle database connections open.
 
-* **Demo History Seeding:** Cursor did not anticipate that reviewers evaluating a fresh clone would only see 1 data point on the history chart. I designed the cold-start logic to generate historical reference runs (T-24h, T-48h) so revision visualization works immediately upon launch.
+* **Reviewer fixtures for revision history:** Cursor did not anticipate that reviewers evaluating a fresh clone would only see one data point on the history chart. I added `seed_demo_history()` with explicit T-24h and T-48h fixtures: copies of the live run with fixed offsets, not separate Open-Meteo fetches. This makes the revision graph testable on cold-start without misrepresenting the data as real historical ingest runs.
 
 ---
 
@@ -226,4 +259,4 @@ class BaseWeatherProvider(ABC):
 
 ```
 
-1. **Schema Extension:** Add `provider_id` to `forecast_runs`. Update the uniqueness constraint to `UNIQUE (provider_id, city_id, run_id, target_time)`. This allows dashboards to directly compare ECMWF against GFS for the same target hour.
+2. **Schema Extension:** Add `provider_id` to `forecast_runs`. Update the uniqueness constraint to `UNIQUE (provider_id, city_id, run_id, target_time)`. This allows dashboards to directly compare ECMWF against GFS for the same target hour.
